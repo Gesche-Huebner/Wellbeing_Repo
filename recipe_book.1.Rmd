@@ -1,0 +1,22 @@
+---
+title: "Recipe_Book_Wellbeing"
+author: "Gesche M huebner"
+date: "15/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Files
+
+There are four R files.
+
+The first one is about identifying for which identifiers there is data across all EHS data files: Merge_Data_EHS_Wellbeing3
+
+The second one is the main analysis file: EHS_Wellbeing_Markdown12
+
+The third one is a file for plotting some of the regression outcomes: plot_model_reduced
+
+The four one is file for crossvalidation of the logistic regression models: crossvalidation_EHS_Wellbeing.R

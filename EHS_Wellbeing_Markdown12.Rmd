@@ -1,0 +1,714 @@
+---
+title: "EHS Wellbeing_Share"
+author: "Gesche M Huebner"
+date: "25/02/2021"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE,warning=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE)
+
+require('pacman')
+
+#all libraries used 
+libraries <- c('ggplot2','tidyverse', 'Cronbach', 'corrr','psych',
+               'apaTables','summarytools','rms','sjPlot', 'data.table',
+               'performance','olsrr','here', 'caret')
+
+pacman::p_load(libraries,install = FALSE,character.only = TRUE)
+
+
+```
+```{r include=FALSE}
+wellbeing<-read.csv(here::here("wellbeing_merged4.csv"),  header=TRUE)
+```
+# Data set
+
+After the process of identifying valid entries as described earlier, `r nrow(wellbeing)` unique dwellings remained for analysis. 
+
+## The outcome variables
+```{r include=FALSE}
+table(wellbeing$qsatis)
+table(wellbeing$qworth)
+table(wellbeing$qhappy)
+table(wellbeing$qanxious)
+```
+For _life satisfaction_ `r wellbeing %>% filter(qsatis < 0) %>% nrow()`, for _worthwhile_ `r wellbeing %>% filter(qworth < 0) %>% nrow()`, for _happy_ `r wellbeing %>% filter(qhappy < 0) %>% nrow()` and for _anxious_ `r wellbeing %>% filter(qanxious < 0) %>% nrow()` respondents did not provide a valid answer, respectively. For all four variables, `r length(which(wellbeing$qanxious=="-9"))` had been coded as 'Does not apply', meaning respondents had not been asked the questions and did not have an answer for any of them; the remaining non-valid answers reflect respondents who chose not to answer a question. 
+Respondents with non-valid data on any of the four outcomes variables were excluded from further analysis. 
+```{r include=FALSE}
+# Filter out no-answers/not-applicable (values < 0)
+wellbeing_red<-wellbeing %>% filter(qsatis >= "0" & 
+                                      qworth >= "0" &
+                                      qhappy>="0" & 
+                                      qanxious >="0")
+
+```
+
+
+To produce figure and summary statistics, see chunk at the end as some other data points will be be removed.  
+
+
+Table xx shows the intercorrelations between the variables and their means and standard deviations. All variables correlated weak to moderately, but significantly with each other. 
+<< insert Word table "CorrelationWellbeing" here.>>
+
+```{r}
+#correlation between those four variables
+cor_wellbeing<-wellbeing_red %>% select("qsatis", "qworth", "qhappy", "qanxious")
+apa.cor.table(cor_wellbeing, filename="CorrelationWellbeing_check.doc", table.number = 1)
+
+```
+
+
+# The predictor variables
+
+## Developed predictor variables
+
+Three variables were developed as predictors for the subsequent regression analysis. 
+
+### Arrears
+
+```{r include=FALSE}
+own<-read.csv(here::here('data_outputs','own_df.csv'), header=TRUE)
+rent<-read.csv(here::here('data_outputs','rent_df.csv'), header=TRUE)
+
+```
+Amongst home owners, `r own %>% filter( mrgar21_desc == 'found it very difficult to keep up') %>% nrow()` respondents _found it very difficult to keep up_ and `r own %>% filter( mrgar21_desc == 'have found it rather difficult to keep up') %>% nrow()`  _have found it rather difficult to keep up_. These two categories were combined into one. The answer _have had no difficulty in keeping up_ was given by `r own %>% filter( mrgar21_desc == 'have had no difficulty in keeping up') %>% nrow()` respondents. For `r own %>% filter( mrgar21_desc == 'Does not apply') %>% nrow() + own %>% filter( mrgar21_desc == 'No answer') %>% nrow()` respondents the question was not applicable or no answer was given. 
+Amongst renters, `r rent %>% filter(arrpr2_desc == 'Yes') %>% nrow()` indicated being behind with rent payments; `r rent %>% filter(arrpr2_desc == 'No') %>% nrow()` were not. For `r rent %>% filter (arrpr2_desc == 'Does not apply') %>% nrow() + rent %>% filter (arrpr2_desc == 'No answer') %>% nrow()` respondents the question was not applicable or no answer was given. 
+A combined indicator of renters and owners was constructed, coded as "difficulty", "no difficulty", "not valid answer". 
+In the data set used for this analysis, i.e. amongst those with valid wellbeing answers, N = `r wellbeing_red %>% filter (arrears=='Yes') %>% nrow()` indicated being in arrears; with N = `r wellbeing_red %>% filter (arrears=='No') %>% nrow()` stating that not and the remaining `r wellbeing_red %>% filter (arrears == 'Not have mortgage nor rent') %>% nrow()` the question not being applicable or not answered. 
+
+### Problems in neighbourhood
+
+The second variable is developed following a factor analysis on the 17 variables indicating the extent of problems in the local area as indicated by the surveyor. An exploratory factor analysis will be conducted. In a first step, the item-correlations will be considered. If there is any item that correlates with <.3 with all other items, it will be excluded from the factors analysis and treated as its own predictor. We will run a PCA to determine the number of factors using the criterion of an eigenvalue greater than 1. We will then run the FA using the principal axis factor method using the number of factors as identified in the PCA. If variables correlate similarly with multiple factors, we will apply varimax rotation which maximises the variance between factors so that each factor to load high on a small number of variables and low on the others. 
+
+```{r include=FALSE}
+
+#rename the variables to get more sensible output names
+old_problem<-names(wellbeing_red %>% dplyr:: select(starts_with("far")))
+
+new_problem<-c("Litter", "Graffiti", "Vandalism", "DogExcrement", "ConditionDwellings", "VacantSites", "IntrusiveIndustry", "NonConformUse", "VacantBuildings", "AirQuality", "HeavyTraffic", "IntrusionMotorways", "RailAirNoise", "NuisanceParking", "ScruffyGardens", "ScruffyBuildings", "ConditionRoads")
+setnames(wellbeing_red, old_problem, new_problem)
+
+#select problems only
+problems_df<-select(wellbeing_red, all_of(new_problem))
+
+#look at all correlations - this command has self-correlation set to NA
+intercor<-correlate(problems_df)
+
+#calculate average - note self-correlation already set to NA
+inter_item <- problems_df %>% correlate() %>%  select(-term) %>% colMeans(na.rm = TRUE)
+
+#run Bartlett test to to ensure there is enough interrelationship
+bartlett<-cortest.bartlett(problems_df)
+
+#run exploratory PCA with as many factors as variables
+(fit_select <- principal(problems_df, nfactors=17, rotate="none"))
+
+#get eigenvalues
+ev <- fit_select$values
+
+```
+ 
+Every item had at least one correlation coefficient with another variable >=.3; hence, all variables were included in the principal component analysis. 
+See Table xx in the Appendix for the full correlation matrix.<< inser Table CorrelationProblems" into appendix>>? 
+
+```{r ProblemCorrelation, include=FALSE}
+options(tibble.width = Inf) #so that all columns are printed 
+#print(intercor) as APA table
+apa.cor.table(problems_df, filename="CorrelationProblems_check.doc", show.conf.interval = FALSE, table.number = 2)
+```
+BArtlett's test of sphericity, [Bartlett Chi^2 = `r round(bartlett$chisq, digits=2)` (`r bartlett$df`), p < `r bartlett$p.value`] indicated that correlations between variables were large enough for a PCA. 
+Initially, an exploratory PCA was run; the resulting eigenvalues are plotted in Figure xx.
+
+```{r echo=FALSE}
+plot (fit_select$values, type="b", ylab="Eigenvalue")
+```
+
+`r sum(ev>1)` eigenvalues were greater than 1, the criterion that had been prespecified to be used for variable selection. However, nd the fourth-largest eigenvalue is very close to 1, with `r round(ev[sum(ev>1)+1], digits=2)`. The screeplot shows - after a steep decline after the first component - another drop after four factors. Hence, four components were extracted. 
+ 
+
+```{r include=FALSE}
+#PCA with four factors
+fit_vari <- principal(problems_df, nfactors=4, rotate="varimax", scores=TRUE)
+fit_obli<- principal(problems_df, nfactors=4, rotate="oblimin")
+
+```
+
+We then rerun the PCA set to four components and with "varimax" rotation. Note that in the prespecification, we had stated to use a factor analysis using the principal factor axis method; however, a PCA was chosen as its solution explained a larger share of the variance with a near identical structure of factor loadings (0.62 versus 0.52 of explained variance). The principal factor method will usually yield results close to the principal component method if either the correlations or the number of variables is large (Rencher, 2002, pp. 424; Rencher, A. C. (2002). Methods of multivariate analysis. New York: J. Wiley.).Using "oblique" rotation which could be considered as more suitable as variables cannot be assumed to be independent, produced comparable results: all variables loaded most on the same factors in both methods; i.e. the same factor solution resulted.  >> insert table "niceFA" here>>
+
+ 
+```{r echo=FALSE}
+
+#nice formatting of factor loadings
+fa4<-tab_pca(problems_df, rotation = c("varimax"), nmbr.fctr=4, file = "niceFA3_check.doc")
+
+#get the factor loadings
+loadings<-fa4$factor.index
+
+```
+
+```{r include=FALSE}
+#Below is principal axis factor method just for comparison 
+fa(problems_df,nfactors=4,n.obs = NA,n.iter=1, rotate="varimax", scores="regression", 
+residuals=FALSE, SMC=TRUE, covar=FALSE,missing=FALSE,impute="median",
+min.err = 0.001,  max.iter = 50)
+```
+
+```{r}
+#now, let us create the factors
+
+#calculate average for each factor based on values in wellbeing_red
+wellbeing_red$Scruffy1<-c(names(which(loadings==1))) %>% select(wellbeing_red,.) %>% rowMeans()
+wellbeing_red$Traffic2<-c(names(which(loadings==2))) %>% select(wellbeing_red,.) %>% rowMeans()
+wellbeing_red$Vacant3<-c(names(which(loadings==3))) %>% select(wellbeing_red,.) %>% rowMeans()
+wellbeing_red$Behaviour4<-c(names(which(loadings==4))) %>% select(wellbeing_red,.) %>% rowMeans()
+
+```
+We calculated the mean score for each factor by averaging the value from the individual variables it was composed of. The first factor was termed "scruffy", as it related to the general state of the environment. The second related to traffic and air pollution issues and was called "traffic". The third was slightly harder to describe; it covered non-conform building use and vacant sites ("Vacant"). The fourth one showed the extent of which problems due to human behaviour occurred ("Behaviour"). 
+
+### Feeling of safety
+
+We calculated Cronbach's alpha for the variables nhhmsf1, nhsfday,  nhsfnte that stood for the perceived feeling of safety when alone at home, outside during the daytime and outside at night.  Only answers between 1 and 5 were retained for analysis as the category of "not doing something for other reasons than safety" was not interpretable, neither was missing data. 
+
+```{r include=FALSE}
+table(wellbeing_red$nhhmsf1)
+table(wellbeing_red$nhsfday)
+table(wellbeing_red$nhsfnte)
+
+
+# Filter to keep values 1 to 5 only as only interpretable
+safety<-wellbeing_red %>% filter((nhhmsf1 >="1"& nhhmsf1<="5") & 
+                                   (nhsfday >= "1" & nhsfday <="5") &
+                                   (nhsfnte >="1" & nhsfnte <="5") )
+
+safety_cor<-select(safety, nhhmsf1, nhsfday, nhsfnte)
+
+#calculate Cronbach's alpha
+cronbach(safety_cor)
+cron.ci(safety_cor, conf = 0.95)
+
+#correlations between any two items
+cor(safety_cor)
+
+#create combined safety variable
+wellbeing_red <- wellbeing_red %>% select(c('nhhmsf1','nhsfday','nhsfnte')) %>%
+                 rowwise() %>% mutate(safety_scale = ifelse(
+                         (nhhmsf1 >="1"& nhhmsf1<="5") & 
+                         (nhsfday >= "1" & nhsfday <="5") &
+                         (nhsfnte >="1" & nhsfnte <="5"),mean(c_across()),NaN)) %>% 
+                 ungroup() %>% select(safety_scale) %>% cbind(wellbeing_red)
+
+                            
+
+
+```
+The number of households with valid data was N = `r dim(safety)[1]`. Cronbach's alpha was `r round(cronbach(safety_cor), digits =1)`. Hence, the internal consistency was exactly at the usually required and here prespecified value of 0.7, and hence the variables were combined into a scale. The mean value across the safety items was calculated and rounded to the nearest integer.  
+
+# Descriptives of all predictor variables 
+
+Table xx, yy, zz show the frequencies for the predictor variables, categorized into the three classes of personal factors, housing factors, and neighbourhood factors. This classification had been derived by all authors through a survey, followed by a discussion on three disputed variables until unanimous agreement was reached.  
+
+```{r SensibleVarNames, include=FALSE}
+#as a first step, let us rename variable names so they appear correctly formatted in any output - we only do this for those variables that we will need for further analysis. 
+
+old<-c("qhealth1_desc", "xmarsta2_desc", "hiqual_desc", "agehrp6x_desc", "sex_desc", 
+       "emphrpx_desc", "ahcinceqv5_desc", "hhcompx_desc","ethhrp8x_desc","lhastdx_desc", 
+       "arrears", "tenure2_desc", "hmheaton_desc", "hmhtcst_desc", "fplihcflg_desc", "fpflgf_desc",           "dwtype8x_desc", "epceeb12e_desc","dhomesy_desc", "cststdux", "cststdbx", "cststdcx",  
+       "dwage7x_desc", "floor5x_desc",  "fexpltyp_desc", "Cdprob_desc", 
+       "has44_desc", "imd1510_desc", "gorehs_desc", "ru11morph_desc", "Scruffy1", "Traffic2",
+       "Vacant3", "Behaviour4", "nhhmsf1_desc", "nhsfday_desc", "nhsfnte_desc", "safety_scale",
+       "qsatis", "qworth", "qhappy", "qanxious", "fiyear")
+
+new<-c("GeneralHealth", "MaritalStatus", "HighestQual", "AgeHRP", "SexHRP","EmploymentHRP",
+       "AHCeqvIncome", "Househ_Type", "EthnicityHRP","BedroomStandard", "Arrears", "Tenure",
+       "LRWarm", "HeatingCost", "FuelPovertyLIHC", "FuelPovertyIncome", "DwellingType", "EPC",
+       "DecentHome", "CostUrgentRepair", "CostBasicRepair", "CostComprRepair", "DwellingAge",
+       "FloorArea", "Garden","Damp","Area_Satisf", "IMDDeciles", "GOREHS", "Morphology", "Scruffy1",
+       "Traffic2", "Vacant3", "Behaviour4", "SafetyHomeAlone", "SafetyDay", "SafetyNight",
+       "Safety_All","LifeSatisfaction", "Worthwhile","Happy", "Anxious", "YearInterview")
+
+setnames(wellbeing_red, old, new)
+
+#then, let us make all character variables upper case and replace white spaces with _
+wellbeing_red<-wellbeing_red  %>% mutate_if(is.character, (str_to_title)) %>% 
+                                  mutate_if(.,is.character, str_replace_all, pattern = " ",
+                                            replacement = "_")
+
+
+```
+```{r}
+
+#personal factors
+
+personal_var<-c("GeneralHealth", "MaritalStatus", "HighestQual", "AgeHRP", "SexHRP", "EmploymentHRP", "AHCeqvIncome", "Househ_Type", "EthnicityHRP") 
+
+personal<- personal_var %>% select(wellbeing_red,.)
+
+# get summary table of unchanged variables
+#pers_descr<-dfSummary(personal, plain.ascii = TRUE, style = "multiline", varnumbers=FALSE, graph.col=FALSE, na.cold=FALSE, valid.col = FALSE)
+
+#this parts now needs to be done manual as different rules will apply (check categories<30_)
+#on the wellbeing_red dataframe remove no answer in General Health
+wellbeing_red<-wellbeing_red %>% filter(GeneralHealth != "No_Answer")
+
+#ethnicity: merge Chinese with 2nd smallest category
+wellbeing_red$EthnicityHRP<-fct_collapse(wellbeing_red$EthnicityHRP, Chinese_Other_Asian=c("Chinese", "Other_Asian"))
+
+#marital status - merge current or former same-se with seperated still legally married
+wellbeing_red$MaritalStatus<-fct_collapse(wellbeing_red$MaritalStatus, Other_Status=c("Current_Or_Former_Same-Sex_Civil_Partnership","Separated_But_Still_Legally_Married" ))
+
+```
+We checked for categories with a count of less than <30. For ethnicity, this meant that Chinese  was merged with the second-smallest category of ethnicity, 'other Asian'. 
+For "general health", [removed for SDC reasons] respondents did not provide an answer and they were dropped from further analysis. FOr Marital Status, the category of "current or former same-sex civil partnership" had < 30 entries and was hence merged with the second-smallest category of "separated but still legally married" to an "OtherStatus" category. Note that the question on highest qualification was only against to people within a specific age range (see documentation); hence the substantial number of non-applicable answers. The first category is the reference category for the subsequent regression; for household composition in deviation from the PAP, single person households with an age greater 60 became reference category as opposed to couple without children as it was the larger category. 
+Table xx shows the frequencies. 
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#relevel the variables to get better order
+#for categorical ones by using fct_infreq to sort by order if that is how the reference category is chosen
+wellbeing_red$MaritalStatus<-fct_infreq(wellbeing_red$MaritalStatus)%>% fct_recode(., "Single"="Single,_That_Is_Never_Married_And_Never_Registered_In_A_Same-Sex_Civil_Partnership")
+
+wellbeing_red$HighestQual<- wellbeing_red$HighestQual%>% fct_recode(.,  "Degree_Level"="At_Degree_Level_Or_Above,",                                            "Other_Qual"="Or_Another_Kind_Of_Qualification?","Not_Asked"="Does_Not_Apply") %>% fct_relevel ("Degree_Level", "Other_Qual", "Not_Asked") 
+
+wellbeing_red$SexHRP<-fct_infreq(wellbeing_red$SexHRP)
+
+wellbeing_red$EmploymentHRP<-fct_infreq(wellbeing_red$EmploymentHRP)
+
+wellbeing_red$Househ_Type<-fct_infreq(wellbeing_red$Househ_Type) %>% fct_recode(.,    "Single_Parent_W/_Dep"="Lone_Parent_With_Dependent_Child(Ren)",
+"Single=>60yrs"="One_Person_Aged_60_Or_Over",
+"Single<60yrs"="One_Person_Under_60", "Couple>=60yrs"="Couple,_No_Dependent_Child(Ren)_Aged_60_Or_Over",
+"Couple<60yrs"="Couple,_No_Dependent_Child(Ren)_Under_60",
+"Other_Multiperson"="Other_Multi-Person_Households",
+"Couple_W/_Dep"="Couple_With_Dependent_Child(Ren)")
+
+wellbeing_red$EthnicityHRP<-fct_infreq(wellbeing_red$EthnicityHRP) %>% fct_recode("Pakist_Bangla"="Pakistani_Or_Bangladeshi")
+
+#for ordinal variables
+wellbeing_red$GeneralHealth<-wellbeing_red$GeneralHealth %>% fct_relevel("Very_Good", "Good", "Fair", "Bad", "Very_Bad")
+
+#put reference cat first - then replace dash with underscore, then all spaces with _ and then remove first _ to avoid having a leading _
+wellbeing_red$AgeHRP<-wellbeing_red$AgeHRP %>% str_replace_all('_','') %>% str_replace_all('-','_') %>% fct_relevel ("45_54", "16_24", "25_34", "35_44", "55_64", "65OrOver")
+
+#for income, reverse levels to make highest reference category 
+wellbeing_red$AHCeqvIncome<-wellbeing_red$AHCeqvIncome %>% str_replace_all('_Quintile','') %>% fct_rev
+
+```
+```{r results = "asis"}
+st_options(
+  plain.ascii = FALSE, 
+  style = "rmarkdown",
+  dfSummary.style = "grid",
+  dfSummary.valid.col = FALSE,
+  dfSummary.graph.magnif = .52,
+  tmp.img.dir = "/tmp"
+)
+
+define_keywords(title.dfSummary = "Description of personal variables")
+dfSummary(select(wellbeing_red, all_of(personal_var)), varnumbers=FALSE, graph.col=FALSE, na.col=FALSE, valid.col = FALSE)
+```
+
+
+```{r include=FALSE}
+#housing
+housing_var<-c("BedroomStandard", "Arrears", "Tenure", "LRWarm", "HeatingCost", "FuelPovertyLIHC","FuelPovertyIncome", "DwellingType", "EPC", "DecentHome", "CostUrgentRepair", "CostBasicRepair", "CostComprRepair", "DwellingAge", "FloorArea", "Garden", "Damp")
+
+housing<-housing_var %>% select(wellbeing_red,.)
+
+#get unchanged variable frequencies
+output_housing<-dfSummary(housing, plain.ascii = TRUE, style = "multiline", varnumbers=FALSE, graph.col=FALSE, na.cold=FALSE, valid.col = FALSE)
+
+
+#combine for HeatingCost Don't know and No answer
+wellbeing_red$HeatingCost<-fct_collapse(wellbeing_red$HeatingCost, "Dont_Know"=c("No_Answer", "Don't_Know_(Spontaneous_Only)")) 
+
+```
+
+For housing factors, some exclusion criteria were changed in comparison the prespecification to avoid too much data loss. For HeatingCost, those who had answered 'Don't know' or given no answer were combined into a "Don't know" category. Also regarding the ability of keeping one's living room warm the category of "Don't know" (N = 141) was retained as its own category instead of being deleted. 
+ For damp, 14 respondents had provided no answer or said don't know; they were merged with no to avoid having to remove them from the analysis. 
+ 
+```{r echo=FALSE}
+#reorder some of the factor levels to make reference category appear first and get correct order where needed
+wellbeing_red$BedroomStandard<-fct_recode(wellbeing_red$BedroomStandard, "=>2Below"="Two_Or_More_Below_Standard", "1Below"="One_Below_Standard", "=>2Above"="Two_Or_More_Above_Standard", "1Above"="One_Above_Standard","At_Standard" = "At_Standard") %>% fct_relevel(., "At_Standard", "1Below", "=>2Below", "1Above", "=>2Above")
+
+#Tenure order by frequency and rename as needed
+wellbeing_red$Tenure<-wellbeing_red$Tenure %>% fct_infreq(.) %>% fct_recode("Rent_Local_Authority"="Local_Authority_Tenant",                      "Own_Mortgage"="Buying_With_Mortgage_(Including_Shared_Ownership)", "Rent_Housing_Association"="Housing_Association_Tenant", "Rent_Private_Unfurn."="Private_Renter_Unfurnished_(Or_Unknown_If_Furnished)", "Rent_Private_Furn."="Private_Renter_Furnished")
+
+#reorder LR Warm by frequency
+wellbeing_red$LRWarm<-fct_infreq(wellbeing_red$LRWarm) 
+
+#heating costs 
+wellbeing_red$HeatingCost<-fct_recode(wellbeing_red$HeatingCost, "Neither" = "Neither_Easy_Nor_Difficult") %>% fct_relevel(.,  "Very_Easy", "Fairly_Easy", "Neither", "Fairly_Difficult", "Very_Difficult", "Dont_Know") 
+
+#FP aby frequency so that yes ref category 
+wellbeing_red$FuelPovertyIncome<-fct_infreq(wellbeing_red$FuelPovertyIncome) %>% fct_recode(.,"Not_In_FP"="Not_In_Fp_-_Full_Income_Definition", "In_FP"="In_Fp_-_Full_Income_Definition") 
+
+wellbeing_red$FuelPovertyLIHC<-fct_infreq(wellbeing_red$FuelPovertyLIHC) %>% fct_recode (., "Not_In_FP_LIHC"="Not_In_Fuel_Poverty_-_Low_Income_High_Costs_Measure", "In_FP_LIHC"="In_Fuel_Poverty_-_Low_Income_High_Costs_Measure")
+
+#detached reference category and remove comma from names
+wellbeing_red$DwellingType<-wellbeing_red$DwellingType %>% str_replace_all(',','') %>% 
+fct_relevel(., "Detached_House", "Semi-Detached_House", "Purpose_Built_Flat_Low_Rise", "Medium/Large_Terraced_House", "Small_Terraced_House", "Bungalow", "Converted_Flat", "Purpose_Built_Flat_High_Rise")  
+
+
+wellbeing_red$EPC<-fct_relevel(wellbeing_red$EPC, "D", "B", "C", "E", "F", "G")
+
+wellbeing_red$DecentHome<-fct_infreq(wellbeing_red$DecentHome)
+
+wellbeing_red$DwellingAge<-fct_relevel(wellbeing_red$DwellingAge, "1965_To_1980", "Pre_1919", "1919_To_1944", "1945_To_1964", "1981_To_1990", "1991_To_2002","Post_2002")
+
+#floor area by frequency but largest first
+wellbeing_red$FloorArea<-fct_relevel(wellbeing_red$FloorArea, "50_To_69_Sqm", "110_Sqm_Or_More", "90_To_109_Sqm", "70_To_89_Sqm", "Less_Than_50_Sqm")
+
+wellbeing_red$Garden<-fct_infreq(wellbeing_red$Garden) %>% fct_recode("Neither"="No_Private_Plot_Or_Shared_Plot")
+#remove comma
+wellbeing_red$Damp<-fct_collapse(wellbeing_red$Damp, "No_(+)"=c("Don't_Know_/_Refusal", "No")) %>% str_replace(',','') %>%  fct_infreq %>% fct_recode("Yes_All_year"="Yes_All_Year_Round", "Yes_Winter"="Yes_But_In_The_Winter_Only", "Yes_Other"="Yes_At_Some_Other_Time")
+
+wellbeing_red$Arrears<- wellbeing_red$Arrears %>% fct_recode("NA"="Not_Have_Mortgage_Nor_Rent")
+
+```
+```{r results = "asis"}
+#create table
+st_options(
+  plain.ascii = FALSE, 
+  style = "rmarkdown",
+  dfSummary.style = "grid",
+  dfSummary.valid.col = FALSE,
+  dfSummary.graph.magnif = .52,
+  tmp.img.dir = "/tmp"
+)
+
+define_keywords(title.dfSummary = "Description of housing variables")
+
+dfSummary(select(wellbeing_red, all_of(housing_var)), varnumbers=FALSE, graph.col=FALSE, na.col=FALSE, valid.col = FALSE)
+```
+
+
+
+```{r include=FALSE}
+hood_var<-c("Area_Satisf", "IMDDeciles", "GOREHS", "Morphology", "Scruffy1", "Traffic2", "Vacant3", "Behaviour4", "SafetyHomeAlone", "SafetyDay", "SafetyNight", "Safety_All")
+
+hood<-hood_var %>% select(wellbeing_red,.)
+
+#for Appendix unchanged variable frequencies
+output_hood<-(dfSummary(hood, plain.ascii = TRUE, style = "multiline", varnumbers=FALSE, graph.col=FALSE, na.cold=FALSE, valid.col = FALSE, na.col=FALSE))
+
+#turn safety scale into interpretable factor 
+wellbeing_red$Safety_All<-as.factor(round(as.numeric(wellbeing_red$Safety_All))) %>%
+                          fct_collapse( "Very_Safe"=c("1"),
+                                        "Fairly_Safe"=c("2"), 
+                                        "A_Bit_Unsafe"=c("3"),
+                                        "Very_Unsafe"=c("4", "5"), 
+                                        "No_Answer"=c("NaN"))
+
+#remove those on Satisfaction who said does nto apply or no answer (3 in total)
+wellbeing_red<-wellbeing_red %>% filter(Area_Satisf != "No_Answer") %>% 
+                                 filter(Area_Satisf !="Does_Not_Apply")
+```
+For all variables on safety, about one third of respondents were coded as "Not applicable". In order to avoid removing such a large number of respondents, this became its own category 'No valid answer'. Those who not answered the question though being asked it and those who gave an uninterpretable answer, i.e. not doing something for other than safety reason were also put into that category. The category reflecting greatest safety concern was only chosen by [removed for SDC reasons] respondents; consequently it was merged with feeling "Very unsafe". For Area_Satisf, those [removed for SDC reasons] respondents with "no answer" or "Does not apply" were removed from further analysis. 
+
+```{r}
+#relevel some categories and rename them
+wellbeing_red$Area_Satisf<-wellbeing_red$Area_Satisf %>% 
+              fct_recode ("Neither" ="Neither_Satisfied_Nor_Dissatisfied") %>% 
+              fct_relevel(., "Very_Satisfied", "Fairly_Satisfied", "Neither", 
+                          "Slightly_Dissatisfied", "Very_Dissatisfied")
+
+wellbeing_red$IMDDeciles<-wellbeing_red$IMDDeciles%>% fct_recode("1st_(Most)"="Most_Deprived_10%_Of_Areas", "10th_(Least)"="Least_Deprived_10%_Of_Areas") %>% fct_relevel (., "1st_(Most)", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th_(Least)")
+
+#order GOR and morphology frequency
+wellbeing_red$GOREHS<-fct_infreq(wellbeing_red$GOREHS)
+wellbeing_red$Morphology<-wellbeing_red$Morphology %>% fct_recode("Hamlet"="Hamlets_And_Isolated_Dwellings","Town_Fringe"= "Town_And_Fringe") %>% fct_infreq()
+```
+The four variables indicating the factors standing for problems in local neighbourhood were kept as continuous variable as opposed to turned into ordinal to keep their granularity. 
+```{r}
+#remove the individual safety variables
+hood_var<-c("Area_Satisf", "IMDDeciles", "GOREHS", "Morphology", "Scruffy1", "Traffic2", "Vacant3", "Behaviour4", "Safety_All")
+
+```
+```{r results = "asis"}
+#create table
+st_options(
+  plain.ascii = FALSE, 
+  style = "rmarkdown",
+  dfSummary.style = "grid",
+  dfSummary.valid.col = FALSE,
+  dfSummary.graph.magnif = .52,
+  tmp.img.dir = "/tmp"
+)
+
+define_keywords(title.dfSummary = "Description of neighbourhood variables")
+dfSummary(select(wellbeing_red, all_of(hood_var)), varnumbers=FALSE, graph.col=FALSE, na.col=FALSE, valid.col = FALSE)
+
+
+```
+
+
+As a control variable the year of data collection was coded as categorical variable. 
+```{r}
+#relevel in order of frequeny
+wellbeing_red$YearInterview<-fct_infreq(as.factor(wellbeing_red$YearInterview))
+```
+
+
+## Results
+Four individual linear regression were run, one for each of the outcome variable. As per prespecification, we run every model using either CostUrgentRepair or CostBasicRepair and inspected the AIC to understand with which repair variable model fit was better. AIC was very similar across the models. The decision was taken to remove urgent repair costs; AIC was smaller for LifeSatisfaction when removing urgent repair costs; with a magnitude of 1.39 which was the largest of any difference observed. Neither urgent nor basic repair costs were significant. As a previous study had used comprehensive repair costs, we also ran the models using that variable; however, it was likewise non significant and AIC values were very similar. 
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#function to set up the data frame - excluding the "baddies", i.e. the variables we are not using for a regression but keeping the depvar. - as we are not using this, we will suppress outputs
+prepwb <- function(df,new,depvar,baddies){
+ 
+  cleandf<- df %>% select(new) %>% select(., -(baddies[!(baddies %in% depvar)]))
+  
+  return(cleandf)
+}
+#here define variables to exclude, ie. the other dependent variables, the individual safety variables and whichever of the repair costs
+baddies <- c("LifeSatisfaction", "Worthwhile", "Happy", "Anxious", "SafetyHomeAlone", "SafetyNight", "SafetyDay", "CostUrgentRepair", "CostComprRepair")
+
+model_life <- prepwb(wellbeing_red,new,'LifeSatisfaction',baddies) %>% lm(LifeSatisfaction ~ ., data = .)
+
+ apa.reg.table(model_life, filename = "RegressionLife_check.doc",table.number = 1)
+ vif(model_life)
+# 
+ model_worth <- prepwb(wellbeing_red,new,'Worthwhile',baddies) %>% lm(Worthwhile ~ ., data = .)
+ apa.reg.table(model_worth, filename = "RegressionWorth_check.doc",table.number = 2)
+vif(model_worth)
+# 
+model_happy <- prepwb(wellbeing_red,new,'Happy',baddies) %>% lm(Happy ~ ., data = .)
+ apa.reg.table(model_happy, filename = "RegressionHappy_check.doc",table.number = 3)
+vif(model_happy)
+# 
+model_anxious <- prepwb(wellbeing_red,new,'Anxious',baddies) %>% lm(Anxious ~ ., data = .)
+apa.reg.table(model_anxious, filename = "RegressionAnxious_check.doc",table.number = 1)
+vif(model_anxious)
+
+#save this as table; without confidence intervals but showing reference category
+tab_model (model_life, model_worth, model_happy, model_anxious, file = "OLS_all_check.doc",  bootstrap=F, show.reflvl = F, show.ci=F)
+
+#test for hetereoscedasticity using Breusch-Pagan
+ols_test_breusch_pagan(model_life)
+ols_test_breusch_pagan(model_worth)
+ols_test_breusch_pagan(model_happy)
+ols_test_breusch_pagan(model_anxious)
+#run AIC(model) to get the AIC value
+```
+All vIFs were less than 10 and hence no correction of multicollinearity applied. 
+All Cook’s distances were less than 1.0 (maxlife = `r round(max(cooks.distance(model_life)), digits=3)`, maxworth=`r round(max(cooks.distance(model_worth)), digits=3)`, maxhappy= `r round(max(cooks.distance(model_happy)), digits=3)`, maxanxious=`r round(max(cooks.distance(model_anxious)), digits=3)`). 
+However, inspection of the plot of fitted values against residuals and the Breusch-Pagan test (all p< .001) indicated substantial hetereoskedasticity in the models; i.e. the variance of the residuals varied across the values of wellbeing. Hence, as prespecified, we used logistic regression instead, dichotomizing the outcome variable into "low/medium" wellbeing and "high / very high" wellbeing. 
+Given that wellbeing variables were skewed towards greater wellbeing, there were not enough data points to make low and medium wellbeing their own data points (see Figure 1).
+As per ONS guidance, 0-4 are low  and 5-6 medium  wellbeing scores for Life Satisfaction, Worthwhile and Happy. For anxious, 0-1 are very low, 2-3 low, 4-5 medium, and 6-10 high. 
+
+```{r include=FALSE}
+#dichotomize outcome variable - values smaller / equal to 6 become 0, indicating lower wellbeing; values greater than 6 become 1 standing for higher welllbeing
+wellbeing_red <- wellbeing_red %>%
+                 mutate(LifeSatisfaction_Dummy = ifelse(LifeSatisfaction <= 6,0,1))
+
+wellbeing_red <- wellbeing_red %>% 
+                 mutate(Worthwhile_Dummy = ifelse(Worthwhile <= 6,0,1))
+
+wellbeing_red <- wellbeing_red %>% 
+                 mutate(Happy_Dummy = ifelse(Happy <= 6,0,1))
+
+wellbeing_red <- wellbeing_red %>% 
+                 mutate(Anxious_Dummy = ifelse(Anxious <= 6,0,1))
+
+#update the list of baddies, i.e. variables not to use 
+baddies_dummy <- c("LifeSatisfaction", "Worthwhile", "Happy", "Anxious", "SafetyHomeAlone", "SafetyNight", "SafetyDay", "CostUrgentRepair", "CostComprRepair", "LifeSatisfaction_Dummy", "Worthwhile_Dummy", "Happy_Dummy", "Anxious_Dummy")
+
+new_dummy <- c(new, "LifeSatisfaction_Dummy", "Worthwhile_Dummy", "Happy_Dummy", "Anxious_Dummy")
+
+model_life_dummy <- prepwb(wellbeing_red,new_dummy,'LifeSatisfaction_Dummy',baddies_dummy) %>% glm(LifeSatisfaction_Dummy ~ ., data = ., family=binomial(link="logit"))
+
+model_worth_dummy <- prepwb(wellbeing_red,new_dummy,'Worthwhile_Dummy',baddies_dummy) %>%
+                     glm(Worthwhile_Dummy ~ ., data = ., family=binomial(link="logit"))
+
+print(summary(model_worth_dummy))
+
+model_happy_dummy <- prepwb(wellbeing_red,new_dummy,'Happy_Dummy',baddies_dummy) %>%
+                     glm(Happy_Dummy ~ ., data = ., family=binomial(link="logit"))
+
+print(summary(model_happy_dummy))
+
+model_anxious_dummy <- prepwb(wellbeing_red,new_dummy,'Anxious_Dummy',baddies_dummy) %>%
+                       glm(Anxious_Dummy ~ ., data = ., family=binomial(link="logit"))
+
+print(summary(model_anxious_dummy))
+
+
+max(vif(model_life_dummy))
+max(vif(model_worth_dummy))
+max(vif(model_happy_dummy))
+max(vif(model_anxious_dummy))
+
+r2_tjur(model_life_dummy)
+r2_tjur(model_worth_dummy)
+r2_tjur(model_happy_dummy)
+r2_tjur(model_anxious_dummy)
+
+
+
+#this is very slow to run so only include when running a final version
+#tab_model(model_life_dummy, model_worth_dummy, model_happy_dummy, model_anxious_dummy, file="Dummy5_check.html", show.reflvl = T, show.ci=0.95, collapse.ci=T)
+
+#for plotting, use the file "plot_model_reduce.R"
+
+#for crossvalidation, use the file "crossvalidation_EHS_Wellbeing.R"
+```
+
+
+Overall model fit was greatest for life satisfaction and lowest for anxiety. Since the demographic variables were not of interest to this paper, they will not be discussed but they are largely in line with previous findings (INSERT SOME REFS). The effect of some housing and neighbourhood variables were present across all outcome variables (x, y, z) but others were not significant for all models. INSERT FIGURE XX: regression_significant6.jpg
+
+Table xx show the various hypotheses and whether they are supported for the four outcome variables. >>INSERT TABLE HERE>>
+
+In a next step, we assessed model fit separately for personal, housing, and neighbourhood variables. Since the year of data selection was not significant in any of the four regression analysis and cannnot be classified into the three categories, it was omitted. For logistic regression, there are several Pseudo R2 estimates. Here,  we used the estimates as developed by Tjur, T. (2009). Coefficients of determination in logistic regression models - A new proposal: The coefficient of discrimination. The American Statistician, 63(4), 366-372; also called coefficient of discrimination. It is bound by 0 (model has no discriminatory power) and 1 (model has full discriminatory power), and describes the difference between the average fitted probability for the binary outcome coded to 1  and the average fitted probability for the binary outcome coded to 0.
+```{r}
+#run the individual models for each category. 
+#as above, UrgentRepairCosts is to be dropped
+housing_var<-c("BedroomStandard", "Arrears", "Tenure", "LRWarm", "HeatingCost", "FuelPovertyLIHC", "FuelPovertyIncome", "DwellingType", "EPC", "DecentHome", "CostBasicRepair", "DwellingAge", "FloorArea", "Garden", "Damp")
+
+#create a function to run the models and output R2_Tjur
+category_reg <- function(df,dep_var, predictors)
+{
+  log_reg<-glm(dep_var~ ., data = select(df, all_of(predictors)),    family=binomial(link='logit'))
+  return(round(r2_tjur(log_reg), digits=2)) #return R2_Tjur
+}
+
+
+r2_indmodel<-matrix(, nrow = 4, ncol = 3)
+colnames(r2_indmodel)<-c("Personal", "Housing", "Neighbourhood")
+rownames(r2_indmodel)<-c("Life Satisfaction", "Worthwhile", "Happy", "Anxious")
+
+voi <- list(personal_var,housing_var,hood_var)
+ooi <- c('LifeSatisfaction_Dummy','Worthwhile_Dummy','Happy_Dummy','Anxious_Dummy')
+
+for (icol in 1:length(voi)) {
+  
+  for (irow in 1: length(ooi)){
+    outcome <- select(wellbeing_red,ooi[irow])
+    r2_indmodel[irow,icol] <-   category_reg(wellbeing_red,outcome[[1]],voi[icol][[1]])
+    
+  }
+}
+
+
+```
+Personal factors on their own explained most of the variance across the outcome variables; followed by housing factors and neighbourhood factors (see Table xx for the R2_Tjur). 
+```{r echo=FALSE}
+print(r2_indmodel)
+```
+
+In the next step, we tested if adding housing to personal variables, and further adding adding neighbourhood variables significantly improved the model fit using ANOVAs. 
+```{r}
+#let us set up a function again
+add_model <- function(m1_outcome, df) 
+  {
+    model1 <-
+              glm(m1_outcome ~ .,data = select(df, all_of(personal_var)),
+                  family = binomial(link = 'logit'))
+    
+    model2 <- update(model1,. ~ . + BedroomStandard + Arrears + Tenure + LRWarm + HeatingCost + FuelPovertyLIHC + FuelPovertyIncome + DwellingType + EPC + DecentHome + CostBasicRepair + DwellingAge + FloorArea + Garden,data = df)
+    
+    model3 <- update(model2,. ~ . + Area_Satisf + IMDDeciles + GOREHS + Morphology + Scruffy1 + Traffic2 + Vacant3 + Behaviour4 + Safety_All,data = df)
+    
+  anova(model1, model2, model3, test = "LR")
+  
+  return(anova(model1, model2, model3, test = "LR"))
+}
+
+comp_ls<-add_model(wellbeing_red$LifeSatisfaction_Dummy, wellbeing_red)
+
+comp_worth<-add_model(wellbeing_red$Worthwhile_Dummy, wellbeing_red)
+
+comp_hap<-add_model(wellbeing_red$Happy_Dummy, wellbeing_red)
+
+comp_anx<-add_model(wellbeing_red$Anxious_Dummy, wellbeing_red)
+
+
+```
+For all outcome variables, adding housing and neighbourhood variables, improved model fit substantially (all p < .001). NOT SURE IF TO SHOW THE TABLES HERE. 
+
+The analysis up to this point showed that various variables can explain variation in wellbeing measures, in particular those based on self-report of householders. Whilst these findings can grow our understanding of (correlational) relationships between built environment and wellbeing, they would not neccessarily be helpful in targeting those households most likely to experience low wellbeing as many of the variables used are not observable from the outside. Hence, in a final part of the analysis (not prespecified), we identified what data exists (publicly accesible or not) and tested how suitable these data are for identifying households with low wellbeing. 
+The first model encompasses EPC data which is publicly available and which in addition to the EPC rating also include the floor area and dwelling type for a particular dwelling. 
+The second model consists of Index of Multiple Deprivation, the Government Office region and the morphology. These data exist on an area basis and apply to any dwelling in that area. 
+The third model consists of the census data which exists on a per-dwelling resolution but is not made publicly available but in theory could be used for analysis and targeting. The variables for this model are: "GeneralHealth", "MaritalStatus",  "HighestQual", "AgeHRP", "SexHRP", "EmploymentHRP", "Househ_Type", "EthnicityHRP", "Tenure", "BedroomStandard". 
+Figure xx shows how how well the models perform to explain variation in Life Satisfaction. INSERT "regression_update.jpg"
+
+```{r}
+#let us set up a function again
+#first, define the predictors: a=public & individual property; b= public&area; c= CENSUS
+a_variables<-c("DwellingType", "EPC", "FloorArea")
+
+b_variables<-c("IMDDeciles", "GOREHS", "Morphology")
+
+c_variables<-c("GeneralHealth", "MaritalStatus",  "HighestQual", "AgeHRP", "SexHRP", "EmploymentHRP", "Househ_Type", "EthnicityHRP", "Tenure", "BedroomStandard")
+
+
+#only done for life satisfaction 
+m1_outcome<-wellbeing_red$LifeSatisfaction_Dummy
+df<-wellbeing_red
+
+add_model2 <- function(m1_outcome, df) 
+  {
+  modelA <- glm(paste0("m1_outcome~",paste0(a_variables,collapse='+')), data =df,
+                family = binomial(link = 'logit'))
+  
+  modelB <- update(modelA,paste0("~.+",paste0(b_variables,collapse='+')))
+      
+    
+  modelC <- update(modelB, paste0("~.+",paste0(c_variables,collapse='+')))
+  
+  
+  md <- list()
+  md[[1]]<-modelA
+  md[[2]]<-modelB
+  md[[3]]<-modelC
+    md[[4]]<-anova(modelA, modelB, modelC, test="Chisq")
+  return(md)
+}
+#anova for comparing the three models. 
+comp_ls2<-add_model2(wellbeing_red$LifeSatisfaction_Dummy, wellbeing_red)
+
+#lets run the individual models, not building on each other
+modelA_pure<-glm(paste0("m1_outcome~",paste0(a_variables,collapse='+')),
+        data =df,
+        family = binomial(link = 'logit'))
+modelB_pure<-glm(paste0("m1_outcome~",paste0(b_variables,collapse='+')),
+        data =df,
+        family = binomial(link = 'logit'))
+modelC_pure<-glm(paste0("m1_outcome~",paste0(c_variables,collapse='+')),
+        data =df,
+        family = binomial(link = 'logit'))
+
+```
+Adding model 2 and model 3 add significantly to the previous models. 
+
+
+#Plot of wellbeing
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+outcome <- wellbeing_red %>% select(c('LifeSatisfaction','Worthwhile','Happy','Anxious')) %>%
+           pivot_longer(LifeSatisfaction:Anxious,names_to = 'measure',values_to = 'ratings') %>%
+           mutate(lab = case_when(measure == 'LifeSatisfaction'~'Satisfaction',
+                                  measure == 'Worthwhile'~'Worthwhile',
+                                  measure == 'Happy'~'Happy',
+                                  measure == 'Anxious'~'Anxious'))
+
+outcome$lab <- factor(outcome$lab,levels = c('Satisfaction','Worthwhile','Happy','Anxious'))
+
+well_plot<-ggplot(outcome, aes(x=ratings)) + geom_histogram() + 
+           facet_wrap(lab~.) +
+           scale_x_continuous(name ="Score", breaks=c(seq(0,10,1))) + 
+           theme_bw()
+
+#save the plot
+save_plot('wellbeing_distribution_check.tif', fig = ggplot2::last_plot(), width = 12, height = 9, dpi = 300, theme = ggplot2::theme_get(), label.color = "black", label.size = 2.4, axis.textsize = 0.8, axis.titlesize = 0.75, legend.textsize = 0.6, legend.titlesize = 0.65, legend.itemsize = 0.5)
+
+#calculate summary statistics 
+round(colMeans(wellbeing_red[,5:8]), digits=2) # calculate means
+lapply(wellbeing_red[5:8], median) # calculate medians
+
+
+ 
+
+```
